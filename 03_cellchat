@@ -1,0 +1,134 @@
+library(Seurat)
+library(dplyr)
+library(SeuratData)
+library(patchwork) 
+library(ggplot2)
+library(CellChat)
+library(ggalluvial)
+library(svglite)
+
+dat <- readRDS('data storage/TNL vs TL_P scRNA.rds')
+dat.markers <- FindAllMarkers(dat, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+dat.markers <- dat.markers %>%
+  group_by(cluster) %>%
+  slice_max(n = 1, order_by = avg_log2FC)
+write.csv(dat.markers,file = 'output/cluster/marker.csv')
+dat.markers <- read.csv(file = 'output/cluster/marker.csv')
+new.cluster.ids <- read.csv('annotation/annotation.csv')
+new.cluster.ids <- paste0(new.cluster.ids$celltype,'_',dat.markers$gene)
+names(new.cluster.ids) <- levels(dat)
+dat_Chat <- RenameIdents(dat, new.cluster.ids)
+
+dat_input <-  dat_Chat@assays$RNA@data
+meta <-  dat_Chat@meta.data
+table(meta$group)
+
+cell_TNL = rownames(meta)[meta$group == "TNL"]
+dat_TNL = dat_input[, cell_TNL]
+meta_TNL = meta[cell_TNL, ]
+levels(meta_TNL$seurat_clusters) <- new.cluster.ids
+cellchat_TNL <- createCellChat(object = dat_TNL, 
+                               meta = meta_TNL, group.by = "seurat_clusters")
+cellchat_TNL <- addMeta(cellchat_TNL, meta = meta_TNL)
+cellchat_TNL <- setIdent(cellchat_TNL, ident.use = "seurat_clusters") 
+levels(cellchat_TNL@idents)
+
+groupSize <- as.numeric(table(cellchat_TNL@idents)) 
+
+CellChatDB <- CellChatDB.human
+CellChatDB_interaction <- CellChatDB$interaction
+CellChatDB.use <- subsetDB(CellChatDB, 
+                           #search = c("Secreted Signaling","ECM-Receptor","Cell-Cell Contact")
+                           search = c("ECM-Receptor"))  
+cellchat_TNL@DB <- CellChatDB.use
+
+cellchat_TNL <- subsetData(cellchat_TNL)
+cellchat_TNL <- identifyOverExpressedGenes(cellchat_TNL)
+cellchat_TNL <- identifyOverExpressedInteractions(cellchat_TNL)
+cellchat_TNL <- projectData(cellchat_TNL, PPI.human)
+cellchat_TNL <- computeCommunProb(cellchat_TNL)
+cellchat_TNL <- filterCommunication(cellchat_TNL, min.cells = 10)
+df.net_TNL <- subsetCommunication(cellchat_TNL)  
+
+cellchat_TNL <- computeCommunProbPathway(cellchat_TNL)
+cellchat_TNL <- aggregateNet(cellchat_TNL)
+groupSize_TNL <- as.numeric(table(cellchat_TNL@idents))
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_circle(cellchat_TNL@net$count, 
+                 vertex.weight = groupSize_TNL, 
+                 weight.scale = T, label.edge= F, 
+                 title.name = "Number of interactions")
+netVisual_circle(cellchat_TNL@net$weight, 
+                 vertex.weight = groupSize_TNL, 
+                 weight.scale = T, label.edge= F, 
+                 title.name = "Interaction weights/strength")
+
+mat <- cellchat_TNL@net$count
+jpeg('output/111.jpeg', width=400*3, height=400*5)
+par(mfcol=c(3,5))
+for (i in 1:nrow(mat)){
+  mat2 <- matrix(0,nrow = nrow(mat),ncol = ncol(mat),
+                 dimnames = dimnames(mat))
+  mat2[i,] <- mat[i,]
+  netVisual_circle(mat2,vertex.weight = groupSize_TNL, 
+                   weight.scale = T, arrow.width = 0.2,
+                   arrow.size = 0.1, edge.weight.max = max(mat),
+                   title.name = rownames(mat)[i])
+}
+dev.off()
+write.csv(df.net_TNL,'output/cellchat/df.net_TNL.csv')
+save(cellchat_TNL,groupSize_TNL,df.net_TNL,
+     file = 'data storage/cellchat/cellchat_TNL.RData')
+load('data storage/cellchat/cellchat_TNL.RData')
+
+cell_TL = rownames(meta)[meta$group == "TL"]
+dat_TL = dat_input[, cell_TL]
+meta_TL = meta[cell_TL, ]
+levels(meta_TL$seurat_clusters) <- new.cluster.ids
+cellchat_TL <- createCellChat(object = dat_TL, 
+                               meta = meta_TL, group.by = "seurat_clusters")
+cellchat_TL <- addMeta(cellchat_TL, meta = meta_TL)
+cellchat_TL <- setIdent(cellchat_TL, ident.use = "seurat_clusters") 
+levels(cellchat_TL@idents)
+groupSize <- as.numeric(table(cellchat_TL@idents)) 
+CellChatDB <- CellChatDB.human
+CellChatDB_interaction <- CellChatDB$interaction
+CellChatDB.use <- subsetDB(CellChatDB, 
+                           search = c("Secreted Signaling","ECM-Receptor","Cell-Cell Contact")) 
+cellchat_TL@DB <- CellChatDB.use
+cellchat_TL <- subsetData(cellchat_TL)
+cellchat_TL <- identifyOverExpressedGenes(cellchat_TL)
+cellchat_TL <- identifyOverExpressedInteractions(cellchat_TL)
+cellchat_TL <- projectData(cellchat_TL, PPI.human)
+cellchat_TL <- computeCommunProb(cellchat_TL)
+cellchat_TL <- filterCommunication(cellchat_TL, min.cells = 10)
+df.net_TL <- subsetCommunication(cellchat_TL)  
+cellchat_TL <- computeCommunProbPathway(cellchat_TL)
+cellchat_TL <- aggregateNet(cellchat_TL)
+groupSize_TL <- as.numeric(table(cellchat_TL@idents))
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_circle(cellchat_TL@net$count, 
+                 vertex.weight = groupSize_TL, 
+                 weight.scale = T, label.edge= F, 
+                 title.name = "Number of interactions")
+netVisual_circle(cellchat_TL@net$weight, 
+                 vertex.weight = groupSize_TL, 
+                 weight.scale = T, label.edge= F, 
+                 title.name = "Interaction weights/strength")
+mat <- cellchat_TL@net$count
+jpeg('output/111.jpeg', width=400*3, height=400*5)
+par(mfcol=c(3,5))
+for (i in 1:nrow(mat)){
+  mat2 <- matrix(0,nrow = nrow(mat),ncol = ncol(mat),
+                 dimnames = dimnames(mat))
+  mat2[i,] <- mat[i,]
+  netVisual_circle(mat2,vertex.weight = groupSize_TL, 
+                   weight.scale = T, arrow.width = 0.2,
+                   arrow.size = 0.1, edge.weight.max = max(mat),
+                   title.name = rownames(mat)[i])
+}
+dev.off()
+write.csv(df.net_TL,'output/cellchat/df.net_TL.csv')
+save(cellchat_TL,groupSize_TL,df.net_TL,
+     file = 'data storage/cellchat/cellchat_TL.RData')
+load('data storage/cellchat/cellchat_TL.RData')
