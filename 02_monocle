@@ -1,0 +1,219 @@
+# load packages
+library(Seurat)
+library(tidyverse)
+library(patchwork)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(ggsci)
+library(RColorBrewer)
+library(harmony)
+library(ggpubr)
+
+# read the data
+dat <- readRDS('data storage/dat_Anno.rds')
+new.cluster.ids <- read.csv('annotation/annotation.csv')
+dat@meta.data$celltype <- dat@meta.data$seurat_clusters
+levels(dat@meta.data$celltype) <- new.cluster.ids$celltype
+dat_mono <- subset(dat,
+                  subset = celltype!='FB' & celltype!='ImC' & 
+                  celltype!='ImC_FB')
+
+# choose the epithelial related cells
+dat_mono <- subset(dat,
+                   subset = celltype=='EpC' | celltype=='EpC_ImC' | celltype=='EpC_FB')
+
+# subclustering
+dat_mono <- RunPCA(dat_mono, 
+                   features = VariableFeatures(object = dat_mono))
+dat_mono <- JackStraw(dat_mono, num.replicate = 100,dim = 20)
+dat_mono <- ScoreJackStraw(dat_mono, dims = 1:20)
+ElbowPlot(dat_mono)
+dat_mono <- dat_mono %>% 
+  RunUMAP(reduction = "harmony", dims = 1:15) %>% 
+  FindNeighbors(reduction = "harmony", dims = 1:15) %>% 
+  FindClusters(resolution = 0.5) %>% 
+  identity()
+dat.markers <- FindAllMarkers(dat_mono,
+                              only.pos = TRUE, 
+                              min.pct = 0.25, 
+                              logfc.threshold = 0.25)
+dat.markers <- dat.markers %>%
+  group_by(cluster) %>%
+  slice_max(n = 1, order_by = avg_log2FC)
+write.csv(dat.markers,file = 'output/monocle/epi/marker.csv')
+dat.markers <- read.csv(file = 'output/monocle/epi/marker.csv')
+# mark the subcluster
+# cell type_marker gene
+new.cluster.ids <- paste0('Epi_',dat.markers$gene)
+names(new.cluster.ids) <- levels(dat_mono)
+dat_mono <- RenameIdents(dat_mono, new.cluster.ids)
+dat_mono[['cell_type']] <- dat_mono@active.ident 
+DimPlot(dat_mono, 
+        reduction = "umap",
+        repel = T,
+        #cols = col,
+        label = TRUE,
+        label.size = 6)
+Umap_Group <- DimPlot(dat_mono,
+                      reduction = "umap",
+                      repel = T,
+                      #cols = col,
+                      label = TRUE,
+                      label.size = 6,
+                      ncol = 4)+
+  labs(x = "UMAP1", y = "UMAP2") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())+
+  theme(panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+Umap_Group
+gene <- read.csv('annotation/feature gene.csv')
+DotPlot(dat_mono,features = gene$gene)+
+  coord_flip()+theme_bw()
+
+# check the subcluster
+VlnPlot(dat_mono,
+        features = 'KRT8',
+        split.by = 'group',
+        cols = c('#e8a761','#9bb3d2'),
+        adjust = 1)+
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title.x = element_blank())+
+  theme(panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+
+# check the cell counting in groups
+tab <- table(group = dat_mono@meta.data$group,
+             cluster = dat_mono@meta.data$seurat_clusters)
+tab
+saveRDS(dat_mono,file = 'data storage/subcluster_epi.rds')
+
+# psuedotime analyzing
+library(monocle)
+
+# read the data 
+dat_mono <- readRDS('data storage/subcluster_epi.rds')
+exp_matrix <- as(as.matrix(dat_mono@assays$RNA@counts),'sparseMatrix')
+
+# p_data for the phenotype 
+p_data <- dat_mono@meta.data 
+p_data$celltype <- dat_mono@active.ident  
+
+# f_data for the gene
+f_data <- data.frame(gene_short_name = row.names(dat_mono),
+                     row.names = row.names(dat_mono))
+# row number of expr_matrix equals row number of f_data (gene number)
+# col number of expr_matrix equals col number of p_data (cell number)
+
+# create CDS for monocle
+pd <- new('AnnotatedDataFrame', data = p_data)
+fd <- new('AnnotatedDataFrame', data = f_data)
+# change p_data and f_data to AnnotatedDataFrame object
+cds <- newCellDataSet(exp_matrix,
+  phenoData = pd, featureData = fd,
+  lowerDetectionLimit = 0.5,
+  expressionFamily = negbinomial.size())
+
+# estimate size factor and disperisions
+cds <- estimateSizeFactors(cds)
+cds <- estimateDispersions(cds)  
+
+# filter the low quality cells
+cds <- detectGenes(cds, min_expr = 0.1) 
+print(head(fData(cds)))
+# 23832 genes for our data set
+expressed_genes <- row.names(subset(fData(cds),
+                                    num_cells_expressed >= 10)) 
+# filter genes expressed in fewer than 10 cells
+# 18781 genes remain
+
+# pseudotime analyzing
+diff <- differentialGeneTest(cds[expressed_genes,],
+                             fullModelFormulaStr="~cell_type",cores=20)
+head(diff)
+deg <- subset(diff, qval < 0.01) # 12424 genes chosen
+deg <- deg[order(deg$qval,decreasing=F),]
+head(deg)
+write.table(deg,file="data storage/monocle/train.monocle.DEG.xls",col.names=T,row.names=F,sep="\t",quote=F)
+saveRDS(deg,'data storage/monocle/train.monocle.DEG.rds')
+deg <- readRDS('data storage/monocle/train.monocle.DEG.rds')
+ordergene <- rownames(deg)
+cds <- setOrderingFilter(cds, ordergene) 
+saveRDS(cds,'data storage/monocle/cds.rds')
+jpeg('output/monocle/epi/train.ordergenes.jpeg',
+     width=1600, height=1200,res = 300)
+par()
+plot_ordering_genes(cds)
+dev.off()
+
+cds <- readRDS('data storage/monocle/cds.rds')
+cds_rD <- reduceDimension(cds, max_components = 2,
+                       method = 'DDRTree')
+saveRDS(cds_rD,'data storage/monocle/cds_rD.rds')
+cds_rD <- readRDS('data storage/monocle/cds_rD.rds')
+cds_rD <- orderCells(cds_rD)
+saveRDS(cds_rD,'data storage/monocle/cds_rD.rds')
+cds <- readRDS('data storage/monocle/cds_rD.rds')
+p1 <- plot_cell_trajectory(cds,color_by="Pseudotime", cell_size=0.8,show_backbone=TRUE)
+p2 <- plot_cell_trajectory(cds,color_by="cell_type", cell_size=0.8,show_backbone=TRUE)
+p3 <- plot_cell_trajectory(cds,color_by="State", cell_size=0.8,show_backbone=TRUE)
+p4 <- plot_cell_trajectory(cds,color_by="group", cell_size=0.8,show_backbone=TRUE)
+jpeg('output/monocle/epi/train.monocle.pseudotime.jpeg',
+     width=24, height=18,units='cm',res = 600)
+par(mfcol=c(2,2))
+p1+p2+p3+p4
+dev.off()
+plot_cell_trajectory(cds,color_by = "cell_type")+facet_wrap(~cell_type,nrow=2)
+
+df <- pData(cds) 
+View(df)
+jpeg('output/monocle/epi/train.monocle.density.jpeg',
+     width=2000*2, height=1500*2,res = 300)
+ggplot(df, aes(Pseudotime, colour = cell_type, fill=cell_type)) +
+  geom_density(bw=0.5,size=1,alpha = 0.5)+theme_classic2()
+dev.off()
+
+keygenes <- head(ordergene,4)
+cds_subset <- cds[c('CDKN1A'),]
+##可视化：以state/celltype/pseudotime进行
+p1 <- plot_genes_in_pseudotime(cds_subset, color_by = "State")
+p2 <- plot_genes_in_pseudotime(cds_subset, color_by = "cell_type")
+p3 <- plot_genes_in_pseudotime(cds_subset, color_by = "Pseudotime")
+plotc <- p1|p2|p3
+ggsave("output/monocle/epi/Genes_pseudotimeplot.jpeg", plot = plotc, width = 16, height = 8)
+
+plot_complex_cell_trajectory(cds_subset, x = 1, y = 2,
+                             color_by = "group")+
+  theme(legend.title = element_blank())
+plot_genes_violin(cds_subset, grouping = "State", color_by = "State",
+                  min_expr = 0.5,
+                  plot_trend = TRUE)
+plot_genes_jitter(cds_subset, grouping = "State", color_by = "State",
+                  min_expr = 0.5,plot_trend = TRUE)
+
+Time_diff <- differentialGeneTest(cds[ordergene,], cores = 1,
+                                  fullModelFormulaStr = "~sm.ns(Pseudotime)")
+Time_diff <- Time_diff[,c(5,2,3,4,1,6,7)] #把gene放前面，也可以不改
+write.csv(Time_diff, "output/monocle/epi/Time_diff_all.csv", row.names = F)
+saveRDS(Time_diff,'output/monocle/epi/Time_diff_all.rds')
+Time_genes <- Time_diff %>% pull(gene_short_name) %>% as.character()
+p=plot_pseudotime_heatmap(cds[Time_genes,], num_clusters=5, 
+                          show_rownames=T, return_heatmap=T)
+jpeg('output/monocle/epi/pseudotime_heatmap.jpeg',
+     width=2000*2, height=1500*2,res = 300)
+p
+dev.off()
+
+State_diff <- differentialGeneTest(cds[ordergene,], cores = 1,
+                                  fullModelFormulaStr = "~sm.ns(State)")
+State_diff <- State_diff[,c(5,2,3,4,1,6,7)] #把gene放前面，也可以不改
+write.csv(State_diff, "output/monocle/epi/State_diff_all.csv", row.names = F)
+saveRDS(State_diff,'output/monocle/epi/State_diff_all.rds')
+plot_genes_jitter(cds[c('CDKN1A')],
+                  grouping = "State",
+                  color_by = "State",
+                  nrow= 1,
+                  ncol = NULL,
+                  plot_trend = TRUE)
