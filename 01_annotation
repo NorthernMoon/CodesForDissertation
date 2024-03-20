@@ -1,0 +1,91 @@
+# load packages
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(stringr)
+library(ggplot2)
+library(SingleR) 
+
+# read data
+dat <- readRDS('data storage/TNL vs TL_P scRNA.rds')
+
+# the feature genes for annotation the cell types
+gene <- read.csv('annotation/feature gene.csv')
+
+# draw the feature genes
+DotPlot(dat,features = gene$gene)+coord_flip()+theme_bw()
+cluster_plot <- DotPlot(dat,features = gene$gene)+coord_flip()+theme_bw()
+
+# rename the clusters by annotation of cell types
+new.cluster.ids <- read.csv('annotation/annotation.csv')
+new.cluster.ids <- new.cluster.ids$celltype
+names(new.cluster.ids) <- levels(dat)
+dat_Anno <- RenameIdents(dat, new.cluster.ids)
+Anno_umap <- DimPlot(dat_Anno, 
+                     reduction = "umap",
+                     repel = T,
+                     #cols = col,
+                     label = TRUE,
+                     label.size = 6)+
+  labs(x = "UMAP1", y = "UMAP2") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())+
+  theme(panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+Anno_dot <- DotPlot(dat_Anno,features = gene$gene)+
+  coord_flip()+theme_bw()
+
+# feature gene expression level in different cells
+VlnPlot(dat_Anno,
+# change the vector of features for express different genes
+        features = 'COL1A1',
+        split.by = 'group',
+        adjust = 0.4,
+        cols = c('#e8a761','#9bb3d2'))+
+  theme(axis.text.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title.y = element_blank())+
+  theme(panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+
+# data output
+ggsave(filename = 'output/cluster/Cluster_plot.png',
+       plot = cluster_plot,
+       width = 32,
+       height = 24,
+       units = 'cm',
+       dpi = 300)
+ggsave(filename = 'output/cluster/Anno_umap.png',
+       plot = Anno_umap,
+       width = 32,
+       height = 24,
+       units = 'cm',
+       dpi = 300)
+ggsave(filename = 'output/cluster/Anno_dot.png',
+       plot = Anno_dot,
+       width = 32,
+       height = 24,
+       units = 'cm',
+       dpi = 300)
+
+# counting of cell types
+tab <- table(label = dat@active.ident,
+             cluster = dat@meta.data$seurat_clusters)
+pheatmap::pheatmap(log10(tab+1),
+                   cluster_rows = F,
+                   cluster_cols = F)
+tab2 <- as.data.frame(tab)
+sum(tab2$Freq[tab2$label=='EpC'])
+sum(tab2$Freq[tab2$label=='ImC_FB'])
+sum(tab2$Freq[tab2$cluster=='14'])
+sum(tab2$Freq)
+dat@meta.data$sample[dat@meta.data$seurat_clusters==7]
+tab_cluster <- table(dat@meta.data$sample[dat@meta.data$seurat_clusters==13])
+pheatmap::pheatmap(log10(tab_cluster+1),
+                   cluster_rows = F,
+                   cluster_cols = F)
+tab_cluster
+tab_cluster_plot <- as.data.frame(tab_cluster)
+tab_cluster_plot
+ggplot(tab_cluster_plot, aes(x = Var1,
+                        y = Freq)) + geom_col()
