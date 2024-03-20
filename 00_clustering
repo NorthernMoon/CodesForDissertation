@@ -1,0 +1,136 @@
+# library relative packages
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(stringr)
+library(ggplot2)
+library(ggsci)
+library(RColorBrewer)
+library(harmony)
+
+# read the 10x genomic data
+# data.dir means the direction of 10x genomic data
+# 10x genomic data consists of three files
+# matrix/features/barcodes
+data_all <- Read10X(data.dir = "amnion/")
+
+# create the seurat object
+dat <- CreateSeuratObject(counts = data_all,
+                          project = "Amnion scRNAseq",
+                          min.features = 200,
+                          min.cells = 3)
+
+# data filting
+# choose the sample for later use
+split <- dat@meta.data
+group <- str_split(rownames(split),"-",simplify =T)
+split$sample <- as.integer(group[,2]) 
+split$ident <- as.factor(split$sample)
+grouping <- function(x){
+  ifelse(x < 5,'TNL','TL')
+}
+split$group <- apply(as.data.frame(split$sample),1,grouping)
+dat@meta.data <- split
+dat <- subset(dat, 
+              subset = nFeature_RNA > 200 & nFeature_RNA < 5000 & sample <9)
+
+# data normalization
+dat <- NormalizeData(dat, normalization.method = "LogNormalize", scale.factor = 10000)
+dat <- FindVariableFeatures(dat, selection.method = "vst", nfeatures = 2000)
+all.genes <- rownames(dat)
+dat <- ScaleData(dat, features = all.genes)
+
+# dimension reduction
+# PCA first 
+dat <- RunPCA(dat, features = VariableFeatures(object = dat))
+
+# use JackStraw() to find the combination to use
+dat <- JackStraw(dat, num.replicate = 100,dim = 20)
+dat <- ScoreJackStraw(dat, dims = 1:20)
+ElbowPlot(dat)
+
+# use Harmony to debatch
+dat_unhar <- dat %>% 
+  FindNeighbors(dims = 1:15) %>% 
+  FindClusters(resolution = 0.5) %>% 
+  RunUMAP(dims = 1:15)
+plot_unhar <- DimPlot(dat_unhar, reduction = "umap",group.by = 'sample')
+dat <- RunHarmony(dat,reduction = "pca",
+                  group.by.vars = "ident",
+                  reduction.save = "harmony")
+
+# clustering
+# run umap
+dat <- dat %>% 
+  RunUMAP(reduction = "harmony", dims = 1:15) %>% 
+  FindNeighbors(reduction = "harmony", dims = 1:15) %>% 
+  FindClusters(resolution = 0.5) %>% 
+  identity()
+
+# drawing umap
+plot_umap <- DimPlot(dat, 
+                     reduction = "umap",
+                     repel = T,
+                     #cols = col,
+                     label = TRUE,
+                     label.size = 6)+
+  labs(x = "UMAP1", y = "UMAP2") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())+
+  theme(panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+plot_umap
+
+# umap for each sample to check the rebatch effect
+Umap_split <- DimPlot(dat,
+                      reduction = "umap",
+                      repel = T,
+                      #cols = col,
+                      label = TRUE,
+                      label.size = 6,
+                      ncol = 4,
+                      split.by = 'sample')+
+  labs(x = "UMAP1", y = "UMAP2") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())+
+  theme(panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+
+# umap for different groups
+Umap_Group <- DimPlot(dat,
+                      reduction = "umap",
+                      repel = T,
+                      #cols = col,
+                      label = TRUE,
+                      label.size = 6,
+                      ncol = 4,
+                      split.by = 'group')+
+  labs(x = "UMAP1", y = "UMAP2") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())+
+  theme(panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+
+# data storage
+ggsave(filename = 'output/cluster/TNL_TL umap.png',
+       plot = plot_umap,
+       width = 16,
+       height = 12,
+       units = 'cm',
+       dpi = 300)
+ggsave(filename = 'output/cluster/Umap_split.png',
+       plot = Umap_split,
+       width = 32,
+       height = 24,
+       units = 'cm',
+       dpi = 300)
+ggsave(filename = 'output/cluster/Umap_Group.png',
+       plot = Umap_Group,
+       width = 32,
+       height = 24,
+       units = 'cm',
+       dpi = 300)
+saveRDS(dat, file = "data storage/TNL vs TL_P scRNA.rds")
